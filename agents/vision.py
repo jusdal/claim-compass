@@ -1,15 +1,18 @@
-import vertexai
+from google import genai
+from google.genai import types
 import mimetypes
-from vertexai.generative_models import GenerativeModel, Part, Image
 
 class VisionAgent:
     def __init__(self, project_id, location):
         self.project_id = project_id
         self.location = location
         
-        # Initialize Vertex AI
-        vertexai.init(project=project_id, location=location)
-        self.model = GenerativeModel("gemini-2.5-flash")
+        # Use the new GenAI Client
+        self.client = genai.Client(
+            vertexai=True, 
+            project=project_id, 
+            location=location
+        )
 
     def analyze_bill(self, image_path):
         """
@@ -19,13 +22,12 @@ class VisionAgent:
 
         mime_type, _ = mimetypes.guess_type(image_path)
         if not mime_type or not mime_type.startswith('image/'):
-            mime_type = 'image/jpeg'  # Safe fallback
+            mime_type = 'image/jpeg'
     
+        # Read image bytes
         with open(image_path, "rb") as f:
-            image_data = f.read()
-    
-        image_part = Part.from_data(data=image_data, mime_type=mime_type)
-
+            image_bytes = f.read()
+            
         prompt = """
         You are an expert Medical Biller. Analyze this bill image.
         Extract the following into a clean JSON-like format (no markdown code blocks, just text):
@@ -37,8 +39,22 @@ class VisionAgent:
         """
 
         try:
-            response = self.model.generate_content(
-                [image_part, prompt]
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(text=prompt),
+                            types.Part(
+                                inline_data=types.Blob(
+                                    mime_type=mime_type,
+                                    data=image_bytes
+                                )
+                            )
+                        ]
+                    )
+                ]
             )
             return response.text
         except Exception as e:

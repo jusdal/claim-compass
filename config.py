@@ -8,5 +8,5 @@ class Config:
     """
     PROJECT_ID = "gen-lang-client-0379443013"
     DATA_STORE_ID = "benefits-data_1763749786516"
-    LOCATION = "us"
+    LOCATION = "us-central1"
     VISION_LOCATION = "us-central1"

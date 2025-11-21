@@ -1,5 +1,4 @@
-google-cloud-aiplatform
+google-adk
 google-cloud-discoveryengine
-google-generativeai
 streamlit
 python-dotenv
