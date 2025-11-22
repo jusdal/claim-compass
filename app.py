@@ -65,7 +65,7 @@ if uploaded_file:
             
             team = CoordinatorTeam(PROJECT_ID, LOCATION, DATA_STORE_ID)
             
-            # UPDATED: Pass the sidebar inputs to the coordinator
+            # Pass the sidebar inputs to the coordinator
             final_letter = team.run(
                 bill_json_text, 
                 patient_name=patient_name, 
@@ -75,6 +75,18 @@ if uploaded_file:
             
             status.update(label="✅ Workflow Complete", state="complete", expanded=False)
 
-        # 4. OUTPUT
+        # 4. OUTPUT (UPDATED for Markdown Rendering)
         st.subheader("📄 Final Appeal Letter")
-        st.text_area("Draft", value=final_letter, height=600)
+        
+        # Create Tabs for better UX
+        tab1, tab2 = st.tabs(["👁️ Preview (Formatted)", "✏️ Edit / Copy"])
+        
+        with tab1:
+            st.success("Review the generated appeal below.")
+            # st.markdown renders the bolding, headers, and lists correctly
+            st.markdown(final_letter)
+            
+        with tab2:
+            st.info("You can edit the raw text here before sending.")
+            # st.text_area is good for editing but doesn't show bolding
+            st.text_area("Raw Text", value=final_letter, height=600)
