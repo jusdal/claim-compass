@@ -2,3 +2,4 @@ google-adk
 google-cloud-discoveryengine
 streamlit
 python-dotenv
+nest_asyncio

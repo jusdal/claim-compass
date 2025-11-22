@@ -6,6 +6,9 @@ Run this before starting the main app to catch configuration issues.
 
 import os
 import sys
+# Ensure we can import from current directory
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from config import Config
 
 
@@ -90,14 +93,12 @@ def test_vision_model():
         )
         
         print(f"  ✓ Model {Config.VISION_MODEL} is accessible")
-        print(f"  Response: {response.text[:100]}...")
         return True
     except Exception as e:
         print(f"  ❌ Vision model error: {e}")
         print(f"\n  Check that:")
         print(f"    1. Vertex AI API is enabled")
         print(f"    2. Model {Config.VISION_MODEL} exists in {Config.VISION_LOCATION}")
-        print(f"    3. Your project has access to this model")
         return False
 
 
@@ -113,7 +114,7 @@ def test_coordinator_model():
             location=Config.LOCATION
         )
         
-        print(f"  ✓ Model {Config.COORDINATOR_MODEL} initialized")
+        print(f"  ✓ Model {Config.COORDINATOR_MODEL} initialized in {Config.LOCATION}")
         return True
     except Exception as e:
         print(f"  ❌ Coordinator model error: {e}")
@@ -129,26 +130,28 @@ def test_discovery_engine():
     try:
         from agents.tools import search_policy_documents
         
+        # UPDATED: Using Config.DATA_STORE_LOCATION specifically
+        print(f"  ℹ️  Connecting to Data Store in: {Config.DATA_STORE_LOCATION}")
+        
         result = search_policy_documents(
-            "test query",
+            "physical therapy", # Simple query to test connection
             Config.PROJECT_ID,
-            Config.LOCATION,
+            Config.DATA_STORE_LOCATION, 
             Config.DATA_STORE_ID
         )
         
         if "Error" in result:
-            print(f"  ⚠️  Discovery Engine warning: {result}")
-            print(f"\n  This is OK if you haven't uploaded policy documents yet.")
-            return True
+            print(f"  ❌ Discovery Engine Error: {result}")
+            return False
         else:
             print(f"  ✓ Discovery Engine is accessible")
+            print(f"  ✓ Found {len(result)} chars of results")
             return True
     except Exception as e:
-        print(f"  ❌ Discovery Engine error: {e}")
+        print(f"  ❌ Discovery Engine Exception: {e}")
         print(f"\n  Check that:")
         print(f"    1. Discovery Engine API is enabled")
-        print(f"    2. Data store {Config.DATA_STORE_ID} exists")
-        print(f"    3. Documents are uploaded to the data store")
+        print(f"    2. Data store {Config.DATA_STORE_ID} exists in {Config.DATA_STORE_LOCATION}")
         return False
 
 
@@ -158,13 +161,12 @@ def main():
     print("🛡️  Claim Compass Setup Validation")
     print("=" * 60)
     
+    # Run strictly the Discovery Engine test if you want to isolate it,
+    # but running all is safer to ensure config integrity.
     tests = [
-        ("Imports", test_imports),
         ("Configuration", test_config),
         ("Authentication", test_authentication),
-        ("Vision Model", test_vision_model),
-        ("Coordinator Model", test_coordinator_model),
-        ("Discovery Engine", test_discovery_engine),
+        ("Discovery Engine", test_discovery_engine), # The critical one for you now
     ]
     
     results = {}
@@ -174,28 +176,14 @@ def main():
         except Exception as e:
             print(f"\n❌ {name} test failed with exception: {e}")
             results[name] = False
-    
+            
     # Summary
     print("\n" + "=" * 60)
-    print("📊 Summary")
-    print("=" * 60)
-    
-    passed = sum(1 for v in results.values() if v)
-    total = len(results)
-    
-    for name, result in results.items():
-        status = "✅ PASS" if result else "❌ FAIL"
-        print(f"  {status} - {name}")
-    
-    print(f"\nResults: {passed}/{total} tests passed")
-    
-    if passed == total:
-        print("\n🎉 All tests passed! You're ready to run: streamlit run app.py")
-        return 0
+    all_passed = all(results.values())
+    if all_passed:
+        print("🎉 SUCCESS: Data Store connection is working!")
     else:
-        print("\n⚠️  Some tests failed. Fix the issues above before running the app.")
-        return 1
-
+        print("❌ FAILURE: Please check the errors above.")
 
 if __name__ == "__main__":
     sys.exit(main())

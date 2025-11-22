@@ -5,6 +5,8 @@ from google.adk.tools import AgentTool, google_search
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 from agents.tools import search_policy_documents
+# Import Config to access the new variable
+from config import Config 
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,24 +18,24 @@ class CoordinatorTeam:
         self.location = location
         self.data_store_id = data_store_id
         
-        # Shared Model (efficient re-use)
-        # Use the full model version string for Vertex AI
+        # Shared Model
         self.model = Gemini(
             model="gemini-2.5-pro",
             project_id=project_id, 
             location=location
         )
 
-    def _create_researcher(self):
-        """Creates the Specialist Researcher who checks policy & laws."""
-        # Wrapper to inject IDs into the custom tool
+    def _create_policy_researcher(self):
+        """Creates the Specialist Researcher who checks ONLY policy documents (Function Tool)."""
+        
         def check_insurance_policy(query: str) -> str:
             """Queries the specific insurance policy PDF for coverage limits/exclusions."""
             try:
+                # UPDATED: Use Config.DATA_STORE_LOCATION instead of self.location
                 return search_policy_documents(
                     query, 
                     self.project_id, 
-                    self.location, 
+                    Config.DATA_STORE_LOCATION, 
                     self.data_store_id
                 )
             except Exception as e:
@@ -41,15 +43,26 @@ class CoordinatorTeam:
                 return f"Error searching policy: {str(e)}"
 
         return LlmAgent(
-            name="ResearcherAgent",
+            name="PolicyResearcher",
             model=self.model,
-            tools=[google_search, check_insurance_policy],
+            tools=[check_insurance_policy],
             instruction="""
-            You are a Medical Billing Researcher.
-            1. Use 'check_insurance_policy' to see if the plan covers the specific CPT codes/services.
-            2. Use 'google_search' to find federal/state protections (e.g., No Surprises Act).
-            3. Return a bulleted list of EVIDENCE found with specific citations.
-            4. Be thorough but concise.
+            You are a Medical Policy Analyst.
+            1. Use 'check_insurance_policy' to find coverage limits, exclusions, and medical necessity criteria.
+            2. Return a bulleted list of POLICY FACTS found in the documents.
+            """
+        )
+
+    def _create_web_researcher(self):
+        """Creates the Specialist Researcher who checks ONLY the web (Search Tool)."""
+        return LlmAgent(
+            name="WebResearcher",
+            model=self.model,
+            tools=[google_search],
+            instruction="""
+            You are a Legal/Medical Researcher.
+            1. Use 'google_search' to find federal/state protections (e.g., No Surprises Act) and similar case precedents.
+            2. Return a bulleted list of LEGAL/EXTERNAL EVIDENCE with citations.
             """
         )
 
@@ -60,12 +73,12 @@ class CoordinatorTeam:
             model=self.model,
             instruction="""
             You are a Patient Advocate Writer.
-            Take the 'Bill Data' and 'Research Evidence' provided.
+            Take the 'Bill Data', 'Policy Facts', and 'Legal Evidence' provided.
             Draft a formal, professional appeal letter that:
-            1. States the patient's case clearly
-            2. Cites specific policy language or laws from the evidence
-            3. Requests reconsideration with specific action items
-            4. Maintains a professional, respectful tone
+            1. States the patient's case clearly.
+            2. Cites specific policy language (from Policy Facts) and laws (from Legal Evidence).
+            3. Requests reconsideration with specific action items.
+            4. Maintains a professional, respectful tone.
             
             Return ONLY the letter text, formatted and ready to send.
             """
@@ -73,32 +86,34 @@ class CoordinatorTeam:
 
     async def _run_async(self, bill_data_json: str):
         """Async version of the orchestration workflow."""
-        researcher = self._create_researcher()
+        # Create the specialized agents
+        policy_researcher = self._create_policy_researcher()
+        web_researcher = self._create_web_researcher()
         writer = self._create_writer()
 
         # The Boss Agent
         coordinator = LlmAgent(
             name="ClaimCoordinator",
             model=self.model,
-            tools=[AgentTool(researcher), AgentTool(writer)],
+            tools=[AgentTool(policy_researcher), AgentTool(web_researcher), AgentTool(writer)],
             instruction="""
             You are the Appeal Process Manager.
             
             YOUR WORKFLOW:
             1. You have received 'Bill Data' from the Vision Agent.
-            2. Call 'ResearcherAgent' to find coverage evidence for the specific CPT codes and services mentioned.
-            3. Wait for the research results.
-            4. Call 'WriterAgent' with BOTH the 'Bill Data' AND the 'Research Evidence' to draft the appeal letter.
-            5. Output the final letter from the Writer.
+            2. Call 'PolicyResearcher' to find specific coverage details in the internal documents.
+            3. Call 'WebResearcher' to find external legal protections and precedents.
+            4. Consolidate the findings.
+            5. Call 'WriterAgent' with the 'Bill Data' AND the combined research (Policy + Web) to draft the appeal letter.
+            6. Output the final letter from the Writer.
             
-            Be methodical and ensure each step completes before moving to the next.
+            Be methodical. Ensure you have gathered both internal policy info and external legal info before writing.
             """
         )
 
         # Execute
         runner = InMemoryRunner(agent=coordinator, app_name="claim_compass")
         
-        # Create session
         try:
             await runner.session_service.create_session(
                 app_name="claim_compass",
@@ -115,7 +130,6 @@ class CoordinatorTeam:
         
         final_response = "Processing..."
         
-        # Stream events to find the final answer
         try:
             for event in runner.run(
                 user_id="user", 
@@ -134,24 +148,13 @@ class CoordinatorTeam:
         return final_response
 
     def run(self, bill_data_json: str):
-        """
-        Orchestrates the entire process:
-        1. User provides Bill Data -> Coordinator
-        2. Coordinator -> Researcher (Get Evidence)
-        3. Coordinator -> Writer (Draft Letter)
-        4. Coordinator -> User (Final Output)
-        """
         try:
-            # Check if there's already an event loop running (e.g., in Streamlit)
             try:
                 loop = asyncio.get_running_loop()
-                # If we're here, we're already in an async context
-                # Create a new task
                 import nest_asyncio
                 nest_asyncio.apply()
                 return asyncio.run(self._run_async(bill_data_json))
             except RuntimeError:
-                # No event loop running, we can create one
                 return asyncio.run(self._run_async(bill_data_json))
         except Exception as e:
             logger.error(f"Error in coordinator.run: {e}")

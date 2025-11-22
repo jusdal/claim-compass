@@ -12,13 +12,17 @@ class Config:
     # Google Cloud Project Settings
     PROJECT_ID = "gen-lang-client-0379443013"
     DATA_STORE_ID = "benefits-data_1763749786516"
-    LOCATION = "us-central1"
-    VISION_LOCATION = "us-central1"
+    LOCATION = "us-east1" #where the LLM runs
+    VISION_LOCATION = "us-east1"
+    
+	# 2. Where the Data Store exists (Agent Builder)
+    # Try "global" first. If that fails, try "us-central1" or "us-east1"
+    DATA_STORE_LOCATION = "us"
     
     # Model Configuration
     # Use versioned model identifiers for Vertex AI
     # Options: gemini-1.5-pro-002, gemini-1.5-flash-002, gemini-1.0-pro-002
-    COORDINATOR_MODEL = os.getenv("COORDINATOR_MODEL", "gemini-1.5-pro-002")
+    COORDINATOR_MODEL = os.getenv("COORDINATOR_MODEL", "gemini-2.5-pro")
     VISION_MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash")
     
     # Optional: Model-specific settings
