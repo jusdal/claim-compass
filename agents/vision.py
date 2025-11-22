@@ -3,6 +3,9 @@ from google.genai import types
 import mimetypes
 import logging
 
+# Import observability
+from observability import get_observability_manager, AgentPhase
+
 logger = logging.getLogger(__name__)
 
 
@@ -10,6 +13,9 @@ class VisionAgent:
     def __init__(self, project_id, location):
         self.project_id = project_id
         self.location = location
+        
+        # Get observability manager
+        self.obs = get_observability_manager()
         
         # Use the new GenAI Client
         self.client = genai.Client(
@@ -20,7 +26,7 @@ class VisionAgent:
 
     def analyze_bill(self, image_path):
         """
-        Reads a medical bill image and extracts structured data.
+        Reads a medical bill image and extracts structured data with observability tracking.
         
         Args:
             image_path: Path to the bill image file
@@ -29,6 +35,13 @@ class VisionAgent:
             Structured text containing extracted bill information
         """
         logger.info(f"Vision Agent scanning: {image_path}")
+        
+        # Start vision span
+        self.obs.start_span(
+            AgentPhase.VISION,
+            "VisionAgent",
+            metadata={"image_path": image_path}
+        )
 
         # Determine MIME type
         mime_type, _ = mimetypes.guess_type(image_path)
@@ -42,6 +55,7 @@ class VisionAgent:
                 image_bytes = f.read()
         except Exception as e:
             logger.error(f"Error reading image file: {e}")
+            self.obs.end_span(success=False, error=f"File read error: {str(e)}")
             return f"Error reading image file: {str(e)}"
             
         prompt = """
@@ -87,11 +101,29 @@ class VisionAgent:
             
             if response and response.text:
                 logger.info("Vision analysis successful")
+                
+                # Extract metadata for observability
+                result_length = len(response.text)
+                cpt_count = response.text.count("CPT") + response.text.count("cpt")
+                has_denial = "denial" in response.text.lower()
+                
+                # End span with success
+                self.obs.end_span(
+                    success=True,
+                    result_metadata={
+                        "output_length": result_length,
+                        "cpt_codes_found": cpt_count,
+                        "denial_detected": has_denial
+                    }
+                )
+                
                 return response.text
             else:
                 logger.error("Empty response from vision model")
+                self.obs.end_span(success=False, error="Empty model response")
                 return "Error: No response from vision model. The image may be unclear or invalid."
                 
         except Exception as e:
             logger.error(f"Error analyzing bill with vision model: {e}", exc_info=True)
+            self.obs.end_span(success=False, error=str(e))
             return f"Error analyzing bill: {str(e)}\n\nPlease ensure the image is clear and try again."

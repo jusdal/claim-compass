@@ -7,14 +7,22 @@ from google.genai import types
 from agents.tools import search_policy_documents
 from config import Config 
 import logging
+import uuid
+
+# Import observability
+from observability import get_observability_manager, AgentPhase
 
 logger = logging.getLogger(__name__)
+
 
 class CoordinatorTeam:
     def __init__(self, project_id, location, data_store_id):
         self.project_id = project_id
         self.location = location
         self.data_store_id = data_store_id
+        
+        # Get observability manager
+        self.obs = get_observability_manager()
         
         # Shared Model
         self.model = Gemini(
@@ -24,16 +32,25 @@ class CoordinatorTeam:
         )
 
     def _create_policy_researcher(self):
-        """Creates the Specialist Researcher who checks ONLY policy documents."""
+        """Creates the Specialist Researcher who checks ONLY policy documents (Function Tool)."""
         
         def check_insurance_policy(query: str) -> str:
+            """Queries the specific insurance policy PDF for coverage limits/exclusions."""
+            # Log tool call
+            self.obs.log_tool_call("check_insurance_policy", query, 0)
+            
             try:
-                return search_policy_documents(
+                result = search_policy_documents(
                     query, 
                     self.project_id, 
                     Config.DATA_STORE_LOCATION, 
                     self.data_store_id
                 )
+                
+                # Log result size
+                self.obs.log_tool_call("check_insurance_policy", query, len(result))
+                return result
+                
             except Exception as e:
                 logger.error(f"Error in check_insurance_policy: {e}")
                 return f"Error searching policy: {str(e)}"
@@ -50,17 +67,15 @@ class CoordinatorTeam:
         )
 
     def _create_web_researcher(self):
-        """Creates the Specialist Researcher who checks ONLY the web."""
+        """Creates the Specialist Researcher who checks ONLY the web (Search Tool)."""
         return LlmAgent(
             name="WebResearcher",
             model=self.model,
             tools=[google_search],
             instruction="""
             You are a Legal/Medical Researcher.
-            1. Use 'google_search' to find federal/state protections.
-            2. IMPORTANT: Pay close attention to the 'Patient Zip/State' provided by the Coordinator. 
-               Prioritize laws specific to that State over the address on the bill.
-            3. Return a bulleted list of LEGAL/EXTERNAL EVIDENCE with citations.
+            1. Use 'google_search' to find federal/state protections (e.g., No Surprises Act) and similar case precedents.
+            2. Return a bulleted list of LEGAL/EXTERNAL EVIDENCE with citations.
             """
         )
 
@@ -71,101 +86,144 @@ class CoordinatorTeam:
             model=self.model,
             instruction="""
             You are a Patient Advocate Writer.
-            
-            DATA HIERARCHY RULES:
-            1. The 'VERIFIED PATIENT CONTEXT' provided by the user is the SOURCE OF TRUTH.
-            2. If the Name or Address in the 'VERIFIED PATIENT CONTEXT' differs from the 'RAW BILL DATA', YOU MUST USE THE VERIFIED CONTEXT.
-            
+            Take the 'Bill Data', 'Policy Facts', and 'Legal Evidence' provided.
             Draft a formal, professional appeal letter that:
-            1. Is addressed FROM the patient name in the Verified Context.
-            2. Cites laws relevant to the State in the Verified Context.
-            3. Uses the procedure codes and amounts from the Raw Bill Data.
-            4. Requests reconsideration with specific action items.
+            1. States the patient's case clearly.
+            2. Cites specific policy language (from Policy Facts) and laws (from Legal Evidence).
+            3. Requests reconsideration with specific action items.
+            4. Maintains a professional, respectful tone.
             
             Return ONLY the letter text, formatted and ready to send.
             """
         )
 
-    async def _run_async(self, bill_data_json: str, patient_name: str = None, patient_zip: str = None, context: str = None):
-        """Async version of the orchestration workflow."""
+    async def _run_async(self, bill_data_json: str, patient_name: str = "", 
+                        patient_zip: str = "", context: str = ""):
+        """Async version of the orchestration workflow with observability."""
         
-        policy_researcher = self._create_policy_researcher()
-        web_researcher = self._create_web_researcher()
-        writer = self._create_writer()
-
-        # The Boss Agent
-        coordinator = LlmAgent(
-            name="ClaimCoordinator",
-            model=self.model,
-            tools=[AgentTool(policy_researcher), AgentTool(web_researcher), AgentTool(writer)],
-            instruction="""
-            You are the Appeal Process Manager.
-            
-            Your Goal: Orchestrate a perfect appeal letter by resolving data conflicts.
-            
-            CRITICAL INSTRUCTION ON DATA SOURCES:
-            - VERIFIED PATIENT CONTEXT (from UI) is the Master Record. 
-            - If the User provides a Name or Zip Code, it OVERRIDES the bill image. 
-            
-            WORKFLOW:
-            1. Analyze the 'VERIFIED PATIENT CONTEXT' to determine the jurisdiction.
-            2. Call 'PolicyResearcher' for internal benefits checks.
-            3. Call 'WebResearcher' for legal precedents in that jurisdiction.
-            4. Call 'WriterAgent' with the processed facts.
-            
-            FINAL OUTPUT RULE (CRITICAL):
-            Your final response to the user MUST BE the exact output from the 'WriterAgent'.
-            - Do NOT summarize what you did ("I have drafted the letter...").
-            - Do NOT add conversational filler ("Here is the letter...").
-            - OUTPUT ONLY THE LETTER TEXT.
-            """
-        )
-
-        runner = InMemoryRunner(agent=coordinator, app_name="claim_compass")
+        # Generate trace ID
+        trace_id = f"trace_{uuid.uuid4().hex[:8]}"
+        self.obs.start_trace(trace_id)
         
         try:
-            await runner.session_service.create_session(app_name="claim_compass", user_id="user", session_id="session")
-        except Exception:
-            pass
+            # Start coordination span
+            self.obs.start_span(
+                AgentPhase.COORDINATION, 
+                "ClaimCoordinator",
+                metadata={
+                    "bill_length": len(bill_data_json),
+                    "has_patient_name": bool(patient_name),
+                    "has_context": bool(context)
+                }
+            )
+            
+            # Create the specialized agents
+            policy_researcher = self._create_policy_researcher()
+            web_researcher = self._create_web_researcher()
+            writer = self._create_writer()
 
-        # --- UPDATED PROMPT CONSTRUCTION ---
-        
-        prompt_text = "Please process this appeal request.\n\n"
-        
-        prompt_text += "=== [SECTION 1] VERIFIED PATIENT CONTEXT (SOURCE OF TRUTH) ===\n"
-        prompt_text += "Use this data for the Patient Name, Address, and State Jurisdiction.\n"
-        prompt_text += f"Patient Name: {patient_name if patient_name else 'Not Provided (Use Bill Data)'}\n"
-        prompt_text += f"Patient Zip: {patient_zip if patient_zip else 'Not Provided (Use Bill Data)'}\n"
-        prompt_text += f"User Notes: {context if context else 'None'}\n\n"
-        
-        prompt_text += "=== [SECTION 2] RAW BILL DATA (SCANNED) ===\n"
-        prompt_text += "Use this data ONLY for Line Items, CPT Codes, Dates, and Amounts.\n"
-        prompt_text += f"{bill_data_json}\n\n"
-        
-        prompt_text += "INSTRUCTIONS:\n"
-        prompt_text += "1. Research the policy and laws.\n"
-        prompt_text += "2. Have the WriterAgent draft the letter.\n"
-        prompt_text += "3. Your final output must be ONLY the letter text from the WriterAgent."
-
-        user_msg = types.Content(role="user", parts=[types.Part(text=prompt_text)])
-        
-        final_response = "Processing..."
-        
-        try:
-            for event in runner.run(user_id="user", session_id="session", new_message=user_msg):
-                if event.is_final_response() and event.content:
-                    for part in event.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            final_response = part.text
-                            break
-        except Exception as e:
-            logger.error(f"Error during agent execution: {e}")
-            final_response = f"Error: {str(e)}"
+            # The Boss Agent
+            coordinator = LlmAgent(
+                name="ClaimCoordinator",
+                model=self.model,
+                tools=[AgentTool(policy_researcher), AgentTool(web_researcher), AgentTool(writer)],
+                instruction=f"""
+                You are the Appeal Process Manager.
                 
-        return final_response
+                Patient Information:
+                - Name: {patient_name or "Not provided"}
+                - Zip Code: {patient_zip or "Not provided"}
+                - Additional Context: {context or "None"}
+                
+                YOUR WORKFLOW:
+                1. You have received 'Bill Data' from the Vision Agent.
+                2. Call 'PolicyResearcher' to find specific coverage details in the internal documents.
+                3. Call 'WebResearcher' to find external legal protections and precedents.
+                4. Consolidate the findings.
+                5. Call 'WriterAgent' with the 'Bill Data' AND the combined research (Policy + Web) to draft the appeal letter.
+                6. Output the final letter from the Writer.
+                
+                Be methodical. Ensure you have gathered both internal policy info and external legal info before writing.
+                """
+            )
 
-    def run(self, bill_data_json: str, patient_name: str = None, patient_zip: str = None, context: str = None):
-        """Synchronous wrapper."""
+            # Execute
+            runner = InMemoryRunner(agent=coordinator, app_name="claim_compass")
+            
+            try:
+                await runner.session_service.create_session(
+                    app_name="claim_compass",
+                    user_id="user",
+                    session_id="session"
+                )
+            except Exception as e:
+                logger.warning(f"Session creation warning (may already exist): {e}")
+
+            user_msg = types.Content(
+                role="user", 
+                parts=[types.Part(text=f"Here is the Bill Data:\n\n{bill_data_json}\n\nPlease process this bill and create an appeal letter.")]
+            )
+            
+            final_response = "Processing..."
+            
+            # Track sub-agent executions
+            policy_research_done = False
+            web_research_done = False
+            
+            try:
+                for event in runner.run(
+                    user_id="user", 
+                    session_id="session", 
+                    new_message=user_msg
+                ):
+                    # Log agent decisions
+                    if hasattr(event, 'agent_name') and hasattr(event, 'content'):
+                        agent_name = getattr(event, 'agent_name', 'Unknown')
+                        
+                        # Track which agents have been called
+                        if agent_name == "PolicyResearcher" and not policy_research_done:
+                            self.obs.start_span(AgentPhase.POLICY_RESEARCH, "PolicyResearcher")
+                            policy_research_done = True
+                        elif agent_name == "WebResearcher" and not web_research_done:
+                            self.obs.start_span(AgentPhase.WEB_RESEARCH, "WebResearcher")
+                            web_research_done = True
+                    
+                    if event.is_final_response() and event.content:
+                        for part in event.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                final_response = part.text
+                                break
+                
+                # Close any open spans
+                if web_research_done:
+                    self.obs.end_span(success=True, result_metadata={"phase": "web_research_complete"})
+                if policy_research_done:
+                    self.obs.end_span(success=True, result_metadata={"phase": "policy_research_complete"})
+                
+                # End coordination span
+                self.obs.end_span(
+                    success=True, 
+                    result_metadata={
+                        "letter_length": len(final_response),
+                        "used_policy_research": policy_research_done,
+                        "used_web_research": web_research_done
+                    }
+                )
+                
+            except Exception as e:
+                logger.error(f"Error during agent execution: {e}")
+                self.obs.end_span(success=False, error=str(e))
+                final_response = f"Error during processing: {str(e)}\n\nPlease check your configuration and try again."
+                    
+            return final_response
+            
+        finally:
+            # Always end trace
+            self.obs.end_trace()
+
+    def run(self, bill_data_json: str, patient_name: str = "", 
+            patient_zip: str = "", context: str = ""):
+        """Run the coordinator with observability tracking."""
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -175,5 +233,6 @@ class CoordinatorTeam:
             except RuntimeError:
                 return asyncio.run(self._run_async(bill_data_json, patient_name, patient_zip, context))
         except Exception as e:
-            logger.error(f"Error: {e}")
-            return f"System Error: {str(e)}"
+            logger.error(f"Error in coordinator.run: {e}")
+            self.obs.end_span(success=False, error=str(e))
+            return f"System Error: {str(e)}\n\nPlease check logs for details."
