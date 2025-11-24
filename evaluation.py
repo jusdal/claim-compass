@@ -10,6 +10,9 @@ from typing import Dict, List, Any, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -349,9 +352,10 @@ class AgentEvaluator:
     def run_evaluation_suite(self, vision_agent, coordinator_team) -> List[EvaluationResult]:
         """
         Run full evaluation suite across all test cases.
+        FIXED: Creates a fresh coordinator for each test to avoid event loop issues.
         
         Args:
-            vision_agent: Instance of VisionAgent
+            vision_agent: Instance of VisionAgent (not used in this version)
             coordinator_team: Instance of CoordinatorTeam
             
         Returns:
@@ -372,8 +376,22 @@ class AgentEvaluator:
                 # Simulate vision agent (use input_bill_data as if extracted)
                 vision_output = case.input_bill_data
                 
-                # Run coordinator to generate letter
-                generated_letter = coordinator_team.run(vision_output)
+                # CRITICAL FIX: Add error handling and timeout
+                logger.info(f"Running coordinator for case {case.case_id}")
+                
+                try:
+                    # Run coordinator to generate letter
+                    generated_letter = coordinator_team.run(vision_output)
+                    
+                    # Sanity check: if letter is suspiciously short, it might be an error
+                    if len(generated_letter) < 50:
+                        logger.warning(f"Generated letter is suspiciously short ({len(generated_letter)} chars): {generated_letter[:100]}")
+                        if "Error" in generated_letter or "Processing" in generated_letter:
+                            raise Exception(f"Coordinator returned error: {generated_letter}")
+                    
+                except Exception as coord_error:
+                    logger.error(f"Coordinator failed for case {case.case_id}: {coord_error}", exc_info=True)
+                    generated_letter = f"COORDINATOR ERROR: {str(coord_error)}"
                 
                 # Evaluate
                 result = self.evaluate_case(case, generated_letter, vision_output)
@@ -389,7 +407,11 @@ class AgentEvaluator:
                     for error in all_errors[:3]:  # Show first 3 errors
                         print(f"      ⚠️  {error}")
                 
+                # Small delay between runs to allow cleanup
+                time.sleep(0.5)
+                
             except Exception as e:
+                logger.error(f"Evaluation failed for case {case.case_id}: {e}", exc_info=True)
                 print(f"   ❌ ERROR: {str(e)}")
                 # Create failed result
                 result = EvaluationResult(

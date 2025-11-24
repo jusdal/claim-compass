@@ -24,11 +24,19 @@ class CoordinatorTeam:
         # Get observability manager
         self.obs = get_observability_manager()
         
-        # Shared Model
-        self.model = Gemini(
+        # DON'T initialize the model here - do it per run to avoid event loop issues
+        self.model = None
+
+    def _get_or_create_model(self):
+        """
+        Get the model, creating it fresh if needed.
+        This prevents event loop reuse issues across multiple runs.
+        """
+        # Always create a fresh model for each run
+        return Gemini(
             model="gemini-2.5-pro",
-            project_id=project_id, 
-            location=location
+            project_id=self.project_id, 
+            location=self.location
         )
 
     def _create_policy_researcher(self):
@@ -106,6 +114,10 @@ class CoordinatorTeam:
         self.obs.start_trace(trace_id)
         
         try:
+            # CRITICAL FIX: Create a fresh model for this run
+            self.model = self._get_or_create_model()
+            logger.info(f"Created fresh model for trace {trace_id}")
+            
             # Start coordination span
             self.obs.start_span(
                 AgentPhase.COORDINATION, 
@@ -150,11 +162,14 @@ class CoordinatorTeam:
             # Execute
             runner = InMemoryRunner(agent=coordinator, app_name="claim_compass")
             
+            # Use a unique session ID per run to avoid conflicts
+            session_id = f"session_{trace_id}"
+            
             try:
                 await runner.session_service.create_session(
                     app_name="claim_compass",
                     user_id="user",
-                    session_id="session"
+                    session_id=session_id
                 )
             except Exception as e:
                 logger.warning(f"Session creation warning (may already exist): {e}")
@@ -173,7 +188,7 @@ class CoordinatorTeam:
             try:
                 for event in runner.run(
                     user_id="user", 
-                    session_id="session", 
+                    session_id=session_id, 
                     new_message=user_msg
                 ):
                     # Log agent decisions
@@ -211,28 +226,45 @@ class CoordinatorTeam:
                 )
                 
             except Exception as e:
-                logger.error(f"Error during agent execution: {e}")
+                logger.error(f"Error during agent execution: {e}", exc_info=True)
                 self.obs.end_span(success=False, error=str(e))
                 final_response = f"Error during processing: {str(e)}\n\nPlease check your configuration and try again."
                     
             return final_response
             
+        except Exception as e:
+            logger.error(f"Error in _run_async: {e}", exc_info=True)
+            self.obs.end_span(success=False, error=str(e))
+            return f"System Error: {str(e)}\n\nPlease check logs for details."
         finally:
             # Always end trace
             self.obs.end_trace()
+            
+            # CRITICAL FIX: Clean up the model reference
+            self.model = None
 
     def run(self, bill_data_json: str, patient_name: str = "", 
             patient_zip: str = "", context: str = ""):
-        """Run the coordinator with observability tracking."""
+        """
+        Run the coordinator with observability tracking.
+        Creates a fresh event loop for each run to avoid loop reuse issues.
+        """
         try:
+            # Check if we're already in an event loop
             try:
                 loop = asyncio.get_running_loop()
+                # We're in a running loop, so we need to use nest_asyncio
+                logger.info("Detected running event loop, applying nest_asyncio")
                 import nest_asyncio
                 nest_asyncio.apply()
+                # Run in the current loop
                 return asyncio.run(self._run_async(bill_data_json, patient_name, patient_zip, context))
             except RuntimeError:
+                # No running loop, create a new one
+                logger.info("No running event loop, creating new one")
                 return asyncio.run(self._run_async(bill_data_json, patient_name, patient_zip, context))
         except Exception as e:
-            logger.error(f"Error in coordinator.run: {e}")
-            self.obs.end_span(success=False, error=str(e))
+            logger.error(f"Error in coordinator.run: {e}", exc_info=True)
+            if self.obs:
+                self.obs.end_span(success=False, error=str(e))
             return f"System Error: {str(e)}\n\nPlease check logs for details."
