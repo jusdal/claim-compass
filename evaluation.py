@@ -62,6 +62,18 @@ class AgentEvaluator:
         self.results_dir.mkdir(exist_ok=True)
         self.test_cases = self._load_test_cases()
         
+    def _get_test_image_path(self, case_id: str) -> Path:
+        """Map test case to its corresponding image."""
+        image_map = {
+            "case_001": "case_001_emergency_room.png",
+            "case_002": "case_002_physical_therapy.png", 
+            "case_003": "case_003_cancer_treatment.png"
+        }
+    
+        if case_id not in image_map:
+            raise ValueError(f"No test image found for case_id: {case_id}")
+        return Path("test_images") / image_map[case_id]
+    
     def _load_test_cases(self) -> List[EvaluationCase]:
         """Load predefined test cases."""
         return [
@@ -352,10 +364,9 @@ class AgentEvaluator:
     def run_evaluation_suite(self, vision_agent, coordinator_team) -> List[EvaluationResult]:
         """
         Run full evaluation suite across all test cases.
-        FIXED: Creates a fresh coordinator for each test to avoid event loop issues.
         
         Args:
-            vision_agent: Instance of VisionAgent (not used in this version)
+            vision_agent: Instance of VisionAgent
             coordinator_team: Instance of CoordinatorTeam
             
         Returns:
@@ -373,25 +384,18 @@ class AgentEvaluator:
             print(f"   Tags: {', '.join(case.tags)}")
             
             try:
-                # Simulate vision agent (use input_bill_data as if extracted)
-                vision_output = case.input_bill_data
+                # Get the test image path for this case
+                test_image = self._get_test_image_path(case.case_id)
                 
-                # CRITICAL FIX: Add error handling and timeout
-                logger.info(f"Running coordinator for case {case.case_id}")
+                if test_image.exists():
+                    print(f"   👁️  Running vision analysis on {test_image.name}")
+                    vision_output = vision_agent.analyze_bill(str(test_image))
+                else:
+                    print(f"   ⚠️  Test image not found: {test_image}, simulating vision output")
+                    vision_output = case.input_bill_data
                 
-                try:
-                    # Run coordinator to generate letter
-                    generated_letter = coordinator_team.run(vision_output)
-                    
-                    # Sanity check: if letter is suspiciously short, it might be an error
-                    if len(generated_letter) < 50:
-                        logger.warning(f"Generated letter is suspiciously short ({len(generated_letter)} chars): {generated_letter[:100]}")
-                        if "Error" in generated_letter or "Processing" in generated_letter:
-                            raise Exception(f"Coordinator returned error: {generated_letter}")
-                    
-                except Exception as coord_error:
-                    logger.error(f"Coordinator failed for case {case.case_id}: {coord_error}", exc_info=True)
-                    generated_letter = f"COORDINATOR ERROR: {str(coord_error)}"
+                # Run coordinator to generate letter
+                generated_letter = coordinator_team.run(vision_output)
                 
                 # Evaluate
                 result = self.evaluate_case(case, generated_letter, vision_output)
@@ -407,12 +411,11 @@ class AgentEvaluator:
                     for error in all_errors[:3]:  # Show first 3 errors
                         print(f"      ⚠️  {error}")
                 
-                # Small delay between runs to allow cleanup
-                time.sleep(0.5)
-                
             except Exception as e:
-                logger.error(f"Evaluation failed for case {case.case_id}: {e}", exc_info=True)
                 print(f"   ❌ ERROR: {str(e)}")
+                import traceback
+                traceback.print_exc()  # This will show the full error
+                
                 # Create failed result
                 result = EvaluationResult(
                     case_id=case.case_id,

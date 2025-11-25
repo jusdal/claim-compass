@@ -31,6 +31,14 @@ def main():
     # Initialize components
     print("📦 Initializing agents...")
     try:
+        # ADD VISION AGENT
+        from agents.vision import VisionAgent
+        vision_agent = VisionAgent(
+            Config.PROJECT_ID,
+            Config.VISION_LOCATION
+        )
+        print("✅ Vision agent initialized")
+        
         coordinator_team = CoordinatorTeam(
             Config.PROJECT_ID,
             Config.LOCATION,
@@ -38,7 +46,7 @@ def main():
         )
         print("✅ Coordinator team initialized")
     except Exception as e:
-        print(f"❌ Failed to initialize coordinator: {e}")
+        print(f"❌ Failed to initialize agents: {e}")
         return 1
     
     # Initialize evaluator
@@ -46,9 +54,9 @@ def main():
     evaluator = AgentEvaluator()
     print(f"✅ Loaded {len(evaluator.test_cases)} test cases\n")
     
-    # Run evaluation
+    # Run evaluation with BOTH agents
     try:
-        results = evaluator.run_evaluation_suite(None, coordinator_team)
+        results = evaluator.run_evaluation_suite(vision_agent, coordinator_team)
         
         # Print final summary
         print("\n" + "="*70)

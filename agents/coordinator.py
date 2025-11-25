@@ -57,21 +57,33 @@ class CoordinatorTeam:
                 
                 # Log result size
                 self.obs.log_tool_call("check_insurance_policy", query, len(result))
+                self.obs.log_agent_decision(
+            		"PolicyResearcher",
+            		f"Search completed",
+            		f"Query: '{query[:50]}...' | Found: {len(result)} chars | Success: {len(result) > 0}"
+        		)
                 return result
                 
             except Exception as e:
                 logger.error(f"Error in check_insurance_policy: {e}")
+                self.obs.log_agent_decision(
+            		"PolicyResearcher",
+            		"Search failed",
+            		f"Query: '{query[:50]}...' | Error: {str(e)}"
+        		)
                 return f"Error searching policy: {str(e)}"
 
         return LlmAgent(
             name="PolicyResearcher",
             model=self.model,
             tools=[check_insurance_policy],
-            instruction="""
-            You are a Medical Policy Analyst.
-            1. Use 'check_insurance_policy' to find coverage limits, exclusions, and medical necessity criteria.
-            2. Return a bulleted list of POLICY FACTS found in the documents.
-            """
+			instruction="""
+			You are a Medical Policy Analyst.
+			1. Search for BROADER terms first (e.g., "physical therapy benefits" not "PT visit 31")
+			2. Look for exception processes and appeals language
+			3. If specific codes aren't found, search for the SERVICE TYPE
+			4. Return ALL relevant policy sections, even if not perfect matches
+			"""
         )
 
     def _create_web_researcher(self):
