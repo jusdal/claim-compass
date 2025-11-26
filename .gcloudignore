@@ -1,0 +1,11 @@
+.git/
+.gitignore
+.venv/
+__pycache__/
+evaluation_results/
+logs/
+test_images/
+*.pyc
+*.jpg
+*.png
+README.md

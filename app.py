@@ -23,17 +23,32 @@ os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 
 st.set_page_config(page_title="Claim Compass", page_icon="🛡️", layout="wide")
 
+# --- SESSION STATE INITIALIZATION ---
+if "generated_letter" not in st.session_state:
+    st.session_state.generated_letter = None
+if "vision_output" not in st.session_state:
+    st.session_state.vision_output = None
+if "is_processing" not in st.session_state:
+    st.session_state.is_processing = False
+
 # --- SIDEBAR: Patient Details & Observability ---
 with st.sidebar:
     st.header("👤 Patient Details")
     st.info("These details help the agents find the correct state laws and format the letter correctly.")
     
-    patient_name = st.text_input("Patient Name", placeholder="e.g. Jane Doe")
-    patient_zip = st.text_input("Zip Code", placeholder="e.g. 10001")
+    # Use keys to persist input values
+    patient_name = st.text_input("Patient Name", placeholder="e.g. Jane Doe", key="p_name")
+    insurance_provider = st.text_input(
+        "Insurance Provider", 
+        placeholder="e.g. Kaiser, Syracuse University, RIT",
+        key="p_provider"
+    )
+    patient_zip = st.text_input("Zip Code", placeholder="e.g. 10001", key="p_zip")
     additional_context = st.text_area(
         "Additional Context", 
         placeholder="e.g. This was an emergency visit while traveling...",
-        help="Add any details you want the AI to know about this specific situation."
+        help="Add any details you want the AI to know about this specific situation.",
+        key="p_context"
     )
     
     st.divider()
@@ -83,79 +98,88 @@ tab1, tab2 = st.tabs(["📤 Process Claim", "📊 System Metrics"])
 
 with tab1:
     # File Uploader
-    uploaded_file = st.file_uploader("Upload Medical Bill", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Upload Medical Bill", type=["jpg", "png", "jpeg", "pdf"])
 
     if uploaded_file:
         # Display Image
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            st.image(uploaded_file, caption="Uploaded Bill", use_column_width=True)
+            st.caption("Uploaded Document Preview")
+            # Simple image display - for PDFs you might just show a success message
+            if uploaded_file.type in ["image/jpeg", "image/png", "image/jpg"]:
+                st.image(uploaded_file, use_container_width=True)
+            else:
+                st.success(f"PDF Uploaded: {uploaded_file.name}")
         
         with col2:
-            if st.button("🚀 Start Appeal Process", use_container_width=True):
-                # 1. Save File
-                temp_filename = f"temp_bill{pathlib.Path(uploaded_file.name).suffix}"
-                with open(temp_filename, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                    
-                # 2. VISION AGENT (The "Eyes")
-                with st.status("👀 Vision Agent: Reading bill...", expanded=True) as status:
-                    vision = VisionAgent(PROJECT_ID, Config.VISION_LOCATION)
-                    bill_json_text = vision.analyze_bill(temp_filename)
-                    st.caption("Extracted Data:")
-                    st.code(bill_json_text, language="text")
-                    status.update(label="✅ Vision Complete", state="complete", expanded=False)
+            # Button triggers processing state
+            if st.button("🚀 Start Appeal Process", use_container_width=True) or st.session_state.is_processing:
+                st.session_state.is_processing = True
+                
+                # 1. Save File (Only if not already done/processed)
+                if not st.session_state.generated_letter:
+                    temp_filename = f"temp_bill{pathlib.Path(uploaded_file.name).suffix}"
+                    with open(temp_filename, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                        
+                    # 2. VISION AGENT (The "Eyes")
+                    with st.status("👀 Vision Agent: Reading bill...", expanded=True) as status:
+                        if not st.session_state.vision_output:
+                            vision = VisionAgent(PROJECT_ID, Config.VISION_LOCATION)
+                            bill_json_text = vision.analyze_bill(temp_filename)
+                            st.session_state.vision_output = bill_json_text
+                        
+                        st.caption("Extracted Data:")
+                        st.code(st.session_state.vision_output, language="text")
+                        status.update(label="✅ Vision Complete", state="complete", expanded=False)
 
-                # 3. COORDINATOR TEAM (The "Brains")
-                with st.status("🤖 Coordinator Agent: Orchestrating team...", expanded=True) as status:
-                    st.write("🔍 Specialist 1: Analyzing Internal Policy...")
-                    st.write("🌍 Specialist 2: Researching Laws & Precedents...")
-                    st.write("✍️  Specialist 3: Drafting Appeal Letter...")
+                    # 3. COORDINATOR TEAM (The "Brains")
+                    with st.status("🤖 Coordinator Agent: Orchestrating team...", expanded=True) as status:
+                        if not st.session_state.generated_letter:
+                            st.write("🔍 Specialist 1: Analyzing Internal Policy...")
+                            st.write("🌍 Specialist 2: Researching Laws & Precedents...")
+                            st.write("✍️  Specialist 3: Drafting Appeal Letter...")
+                            
+                            team = CoordinatorTeam(PROJECT_ID, LOCATION, DATA_STORE_ID)
+                            
+                            final_letter = team.run(
+                                st.session_state.vision_output, 
+                                patient_name=patient_name, 
+                                patient_zip=patient_zip, 
+                                context=additional_context
+                            )
+                            st.session_state.generated_letter = final_letter
+                        
+                        status.update(label="✅ Workflow Complete", state="complete", expanded=False)
                     
-                    team = CoordinatorTeam(PROJECT_ID, LOCATION, DATA_STORE_ID)
-                    
-                    final_letter = team.run(
-                        bill_json_text, 
-                        patient_name=patient_name, 
-                        patient_zip=patient_zip, 
-                        context=additional_context
-                    )
-                    
-                    status.update(label="✅ Workflow Complete", state="complete", expanded=False)
+                    # Reset processing flag so we don't re-run on next interaction
+                    st.session_state.is_processing = False
+                    st.rerun() # Force refresh to show results
 
-                # 4. OUTPUT
+            # 4. OUTPUT DISPLAY (Persistent)
+            if st.session_state.generated_letter:
                 st.subheader("📄 Final Appeal Letter")
-                st.text_area("Draft", value=final_letter, height=600)
+                st.text_area("Draft", value=st.session_state.generated_letter, height=600)
                 
                 # Download button
                 st.download_button(
                     label="📥 Download Letter",
-                    data=final_letter,
+                    data=st.session_state.generated_letter,
                     file_name=f"appeal_letter_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                     mime="text/plain"
                 )
                 
-                # Show recent metrics
-                obs = get_observability_manager()
-                latest_metrics = obs.metrics[-3:] if obs.metrics else []
-                
-                if latest_metrics:
-                    st.divider()
-                    st.subheader("⚡ Performance Metrics (This Run)")
-                    
-                    metrics_cols = st.columns(len(latest_metrics))
-                    for i, metric in enumerate(latest_metrics):
-                        with metrics_cols[i]:
-                            st.metric(
-                                label=metric.phase.replace('_', ' ').title(),
-                                value=f"{metric.duration_seconds}s",
-                                delta="Success" if metric.success else "Failed",
-                                delta_color="normal" if metric.success else "inverse"
-                            )
+                if st.button("🔄 Reset and Process New Bill"):
+                    st.session_state.generated_letter = None
+                    st.session_state.vision_output = None
+                    st.session_state.is_processing = False
+                    st.rerun()
 
 with tab2:
     st.header("📊 System Performance Metrics")
+    # ... (Keep your existing Metrics code for Tab 2) ...
+    # Just ensure indentation is correct
     
     # Load all evaluation results
     eval_dir = pathlib.Path("evaluation_results")
@@ -210,7 +234,7 @@ with tab2:
                             for error in result["letter_errors"]:
                                 st.write(f"- {error}")
             
-            # Historical trend (if multiple evaluations exist)
+            # Historical trend
             if len(eval_files) > 1:
                 st.subheader("📉 Historical Performance")
                 
@@ -229,9 +253,9 @@ with tab2:
                 if historical_data:
                     st.line_chart([d["score"] for d in reversed(historical_data)])
         else:
-            st.info("No evaluation results yet. Run `python run_evaluation.py` to generate evaluation data.")
+            st.info("No evaluation results yet. Run `python run_evaluation.py` locally to generate evaluation data.")
     else:
-        st.info("No evaluation results directory. Run `python run_evaluation.py` to create evaluations.")
+        st.info("No evaluation results directory. Run `python run_evaluation.py` locally to create evaluations.")
     
     # System logs
     st.divider()

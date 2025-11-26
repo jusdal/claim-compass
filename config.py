@@ -10,17 +10,15 @@ class Config:
     For this hackathon demo, values are hardcoded for simplicity.
     """
     # Google Cloud Project Settings
-    PROJECT_ID = "gen-lang-client-0379443013"
-    DATA_STORE_ID = "benefits-data_1763749786516"
-    LOCATION = "us-east1" #where the LLM runs
-    VISION_LOCATION = "us-east1"
+    PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
+    DATA_STORE_ID = os.getenv("DATA_STORE_ID")
+    LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION") #where the LLM runs
+    VISION_LOCATION = os.getenv("VISION_LOCATION")  #where the Vision model runs
     
 	# 2. Where the Data Store exists (Agent Builder)
-    # Try "global" first. If that fails, try "us-central1" or "us-east1"
     DATA_STORE_LOCATION = "us"
     
     # Model Configuration
-    # Use versioned model identifiers for Vertex AI
     # Options: gemini-1.5-pro-002, gemini-1.5-flash-002, gemini-1.0-pro-002
     COORDINATOR_MODEL = os.getenv("COORDINATOR_MODEL", "gemini-2.5-pro")
     VISION_MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash")

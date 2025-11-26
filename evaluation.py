@@ -24,6 +24,7 @@ class EvaluationCase:
     input_bill_data: str  # Simulated vision agent output
     expected_outputs: Dict[str, Any]  # What we expect to find
     tags: List[str]  # e.g., ["emergency", "out_of_network", "no_surprises_act"]
+    insurance_provider: str = "General Policy"  # Optional insurance provider name
 
 
 @dataclass
@@ -80,6 +81,7 @@ class AgentEvaluator:
             EvaluationCase(
                 case_id="case_001",
                 name="Emergency Room Out-of-Network",
+                insurance_provider="Syracuse University",
                 description="Patient received emergency care at out-of-network facility",
                 input_bill_data="""
                 Provider Name: Memorial Hospital Emergency Department
@@ -112,6 +114,7 @@ class AgentEvaluator:
             EvaluationCase(
                 case_id="case_002",
                 name="Physical Therapy Benefit Limit",
+                insurance_provider="Rochester Institute of Technology Excellus BlueCross BlueShield",
                 description="Patient exceeded annual PT visit limit",
                 input_bill_data="""
                 Provider Name: HealthFirst Physical Therapy
@@ -145,6 +148,7 @@ class AgentEvaluator:
             EvaluationCase(
                 case_id="case_003",
                 name="Experimental Treatment Denial",
+                insurance_provider="Kaiser Permanente",
                 description="Denied for experimental/investigational treatment",
                 input_bill_data="""
                 Provider Name: Cancer Treatment Center of Excellence
@@ -372,7 +376,7 @@ class AgentEvaluator:
         Returns:
             List of EvaluationResults
         """
-        results = []
+        results = []  # <--- THIS WAS MISSING
         
         print("\n" + "="*70)
         print("🧪 RUNNING AGENT EVALUATION SUITE")
@@ -387,15 +391,19 @@ class AgentEvaluator:
                 # Get the test image path for this case
                 test_image = self._get_test_image_path(case.case_id)
                 
-                if test_image.exists():
-                    print(f"   👁️  Running vision analysis on {test_image.name}")
-                    vision_output = vision_agent.analyze_bill(str(test_image))
-                else:
-                    print(f"   ⚠️  Test image not found: {test_image}, simulating vision output")
-                    vision_output = case.input_bill_data
+                # STRICT MODE: Fail if image is missing
+                if not test_image.exists():
+                    raise FileNotFoundError(f"CRITICAL: Test image not found at {test_image}. Cannot run Vision Agent.")
+
+                print(f"   👁️  Running vision analysis on {test_image.name}")
+                vision_output = vision_agent.analyze_bill(str(test_image))
                 
                 # Run coordinator to generate letter
-                generated_letter = coordinator_team.run(vision_output)
+                # We pass the specific insurance provider from the test case to prevent hallucination
+                generated_letter = coordinator_team.run(
+                    vision_output,
+                    insurance_provider=case.insurance_provider 
+                )
                 
                 # Evaluate
                 result = self.evaluate_case(case, generated_letter, vision_output)
@@ -413,10 +421,8 @@ class AgentEvaluator:
                 
             except Exception as e:
                 print(f"   ❌ ERROR: {str(e)}")
-                import traceback
-                traceback.print_exc()  # This will show the full error
                 
-                # Create failed result
+                # Create failed result so the suite continues
                 result = EvaluationResult(
                     case_id=case.case_id,
                     timestamp=datetime.now().isoformat(),
