@@ -23,14 +23,12 @@ Claim Compass utilizes a sequential multi-agent system powered by **Google Verte
 
 ```mermaid
 graph TD
-    User[User Uploads Bill & Policy] --> Boss[Boss Agent: Claim Coordinator]
-    Boss -->|Delegate: OCR| Agent1[Agent 1: The Visionary]
-    Agent1 -->|Extracted Data| Boss
-    Boss -->|Delegate: Research| Agent2[Agent 2: The Researcher]
-    Agent2 -->|Sub-task| Agent2a[Policy Researcher<br>RAG + Vertex AI Search]
-    Agent2 -->|Sub-task| Agent2b[Legal Researcher<br>Google Search Tool]
-    Agent2 -->|Evidence & Citations| Boss
-    Boss -->|Delegate: Draft| Agent3[Agent 3: The Advocate]
+    User[User Uploads Bill] --> Frontend[Streamlit App]
+    Frontend -->|Step 1: OCR| Agent1[Agent 1: The Visionary]
+    Agent1 -->|Extracted Data| Frontend
+    Frontend -->|Step 2: Orchestrate| Boss[Boss Agent: Claim Coordinator]
+    Boss -->|Delegate| Agent2[Agent 2: The Researcher]
+    Boss -->|Delegate| Agent3[Agent 3: The Advocate]
     Agent3 -->|Final Appeal Letter| Boss
     Boss --> Result[Ready-to-Mail PDF]
 ```
@@ -59,7 +57,9 @@ A coordinated dual-specialist system using **Gemini 2.5 Pro**.
 * **Output:** A formal, professional appeal letter that cites specific policy language, references applicable laws, and requests reconsideration.
 
 #### 🛂 Orchestration Layer
-The **Boss Agent (Claim Coordinator)** uses Google ADK's agent-as-tool pattern to manage state and handoffs: `Vision → Policy Research → Legal Research → Synthesis → Letter Generation`.
+The application follows a two-stage pipeline:
+1. **Perception Layer:** The `VisionAgent` extracts structured data from the bill.
+2. **Reasoning Layer:** The `ClaimCoordinator` receives this data and orchestrates the research and drafting specialists (`PolicyResearcher` → `WebResearcher` → `WriterAgent`).
 
 ## 🔑 Key Concepts Implemented
 
@@ -70,7 +70,8 @@ The **Boss Agent (Claim Coordinator)** uses Google ADK's agent-as-tool pattern t
     * **RAG Architecture:** Strictly grounds responses in uploaded policy PDFs to prevent hallucinations.
 * ✅ **Sessions & State Management:** Uses `InMemoryRunner` to maintain conversation state across agent handoffs and track bill data/research findings.
 * ✅ **Intelligent Context Engineering:** Dynamic prompting adapts based on denial reasons (e.g., citing the *No Surprises Act* for emergency bills vs. policy limits for benefit denials).
-* ✅ **Observability:** Python logging framework for agent transitions and tool calls.
+* ✅ **Custom Observability Stack:** Built a bespoke `ObservabilityManager` that implements the "Three Pillars of Observability" (Logs, Traces, Metrics). It tracks agent reasoning steps, tool usage duration, and token consumption in real-time.
+* ✅ **Automated Evaluation Pipeline:** Implements a "Golden Set" testing strategy with **LLM-as-a-Judge**. The system automatically grades generated letters on tone, persuasiveness, and factual grounding (e.g., citing the *No Surprises Act*), ensuring high-quality output before deployment.
 
 ## 🛠️ Technology Stack
 
@@ -126,6 +127,20 @@ python test_setup.py
 
 # 2. Run the Streamlit application
 streamlit run app.py
+```
+
+### Deployment (Google Cloud Run)
+
+The project is containerized for easy deployment:
+
+```bash
+# 1. Build the container
+gcloud builds submit --tag gcr.io/$PROJECT_ID/claim-compass .
+
+# 2. Deploy to Cloud Run
+gcloud run deploy claim-compass \
+  --image gcr.io/$PROJECT_ID/claim-compass \
+  --allow-unauthenticated
 ```
 
 ## 🔮 Future Enhancements
