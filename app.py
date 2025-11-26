@@ -3,6 +3,7 @@ import streamlit as st
 import pathlib
 import logging
 import json
+import asyncio
 from datetime import datetime
 from config import Config
 from agents.vision import VisionAgent
@@ -31,6 +32,65 @@ if "vision_output" not in st.session_state:
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
 
+
+# ==========================================
+# 🔧 ASYNC HELPER FUNCTION
+# ==========================================
+async def process_bill_async(temp_filename, patient_info):
+    """
+    Async processing pipeline for bill analysis and letter generation.
+    
+    Args:
+        temp_filename: Path to uploaded bill image
+        patient_info: Dict with patient details (name, zip, provider, context)
+        
+    Returns:
+        tuple: (vision_output, generated_letter)
+    """
+    # AGENT 1: Vision Analysis
+    vision = VisionAgent(PROJECT_ID, Config.VISION_LOCATION)
+    vision_output = await vision.analyze_bill(temp_filename)
+    
+    # AGENT 2: Coordinator Team
+    team = CoordinatorTeam(PROJECT_ID, LOCATION, DATA_STORE_ID)
+    generated_letter = await team.run(
+        vision_output,
+        patient_name=patient_info.get('name', ''),
+        patient_zip=patient_info.get('zip', ''),
+        insurance_provider=patient_info.get('provider', ''),
+        context=patient_info.get('context', '')
+    )
+    
+    return vision_output, generated_letter
+
+
+def run_async_task(coroutine):
+    """
+    Helper to run async code from Streamlit's sync context.
+    
+    Properly manages event loop lifecycle to avoid resource warnings.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(coroutine)
+        
+        # Clean up pending tasks
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        
+        # Wait for all tasks to be cancelled
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        
+        return result
+    finally:
+        # Close the loop cleanly
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
 # ==========================================
 # 🎛️ SIDEBAR: ADMIN & OBSERVABILITY
 # ==========================================
@@ -46,31 +106,7 @@ with st.sidebar:
     col1.metric("Total Runs", summary.get("total_executions", 0))
     col2.metric("Success %", f"{summary.get('overall_success_rate', 0):.0f}%")
     
-    # --- SECTION 2: EVALUATION SCORES ---
-    st.divider()
-    st.subheader("🧪 Quality Benchmarks")
-    eval_dir = pathlib.Path("evaluation_results")
-    if eval_dir.exists():
-        eval_files = sorted(eval_dir.glob("evaluation_*.json"), key=os.path.getmtime, reverse=True)
-        if eval_files:
-            with open(eval_files[0], 'r') as f:
-                latest_eval = json.load(f)
-            
-            # Calculate averages from the latest run
-            results = latest_eval.get("results", [])
-            if results:
-                avg_score = sum(r["overall_score"] for r in results) / len(results)
-                st.metric("Latest Eval Score", f"{avg_score*100:.1f}%", 
-                         help=f"Based on {len(results)} test cases run at {latest_eval.get('timestamp')}")
-                
-                with st.expander("View Detailed Scores"):
-                    for r in results:
-                        icon = "✅" if r['success'] else "❌"
-                        st.caption(f"{icon} **{r['case_id']}**: {r['overall_score']*100:.0f}%")
-        else:
-            st.caption("No evaluation data found.")
-    
-    # --- SECTION 3: LOGS ---
+    # --- SECTION 2: LOGS (Simplified - removed eval results) ---
     st.divider()
     with st.expander("📜 System Logs", expanded=False):
         log_dir = pathlib.Path("logs")
@@ -80,9 +116,10 @@ with st.sidebar:
                 selected_log = st.selectbox("Log File", log_files, format_func=lambda x: x.name)
                 if selected_log:
                     with open(selected_log, 'r') as f:
-                        st.code(f.read()[-2000:], language="log") # Show last 2000 chars
+                        st.code(f.read()[-2000:], language="log")
             else:
                 st.info("No logs yet.")
+
 
 # ==========================================
 # 🏠 MAIN PAGE: PATIENT ADVOCATE
@@ -136,32 +173,36 @@ if uploaded_file:
                     st.info(f"📄 PDF: {uploaded_file.name}")
 
             with col_status:
-                # AGENT 1: VISION
-                with st.status("👀 Reading Bill...", expanded=True) as status:
-                    if not st.session_state.vision_output:
-                        vision = VisionAgent(PROJECT_ID, Config.VISION_LOCATION)
-                        bill_json_text = vision.analyze_bill(temp_filename)
-                        st.session_state.vision_output = bill_json_text
-                        st.write("✅ Extracted bill details")
-                    
-                    # AGENT 2: RESEARCH & WRITING
-                    status.update(label="🤖 AI Agents Working...", state="running")
-                    st.write(f"🔍 Searching **{insurance_provider or 'General'}** policy documents...")
-                    st.write("⚖️  Checking Federal protections (No Surprises Act)...")
+                # Run Async Processing
+                with st.status("🤖 AI Agents Processing...", expanded=True) as status:
+                    st.write("👀 Reading bill with Vision AI...")
+                    st.write(f"🔍 Searching {insurance_provider or 'policy'} documents...")
+                    st.write("⚖️  Checking Federal protections...")
                     st.write("✍️  Drafting professional appeal...")
                     
-                    if not st.session_state.generated_letter:
-                        team = CoordinatorTeam(PROJECT_ID, LOCATION, DATA_STORE_ID)
-                        final_letter = team.run(
-                            st.session_state.vision_output, 
-                            patient_name=patient_name, 
-                            patient_zip=patient_zip, 
-                            insurance_provider=insurance_provider,
-                            context=additional_context
-                        )
-                        st.session_state.generated_letter = final_letter
+                    # Package patient info
+                    patient_info = {
+                        'name': patient_name,
+                        'zip': patient_zip,
+                        'provider': insurance_provider,
+                        'context': additional_context
+                    }
                     
-                    status.update(label="✅ Appeal Generated!", state="complete", expanded=False)
+                    try:
+                        # THIS IS THE KEY CHANGE: Run async code from sync Streamlit
+                        vision_output, generated_letter = run_async_task(
+                            process_bill_async(temp_filename, patient_info)
+                        )
+                        
+                        st.session_state.vision_output = vision_output
+                        st.session_state.generated_letter = generated_letter
+                        
+                        status.update(label="✅ Appeal Generated!", state="complete", expanded=False)
+                        
+                    except Exception as e:
+                        status.update(label="❌ Error Occurred", state="error", expanded=True)
+                        st.error(f"Processing failed: {str(e)}")
+                        st.info("Please check that all configuration is correct and try again.")
             
             st.session_state.is_processing = False
             st.rerun()
@@ -171,12 +212,12 @@ if uploaded_file:
         st.divider()
         st.subheader("3. Your Appeal Letter")
         
-        st.success("Your letter is ready! Review it below.")
+        st.success("✅ Your letter is ready! Review it below and download when satisfied.")
         
         col_text, col_actions = st.columns([3, 1])
         
         with col_text:
-            st.text_area("Appeal Letter Draft", value=st.session_state.generated_letter, height=600)
+            st.text_area("Appeal Letter Draft", value=st.session_state.generated_letter, height=600, key="letter_display")
         
         with col_actions:
             st.download_button(
@@ -188,7 +229,20 @@ if uploaded_file:
                 use_container_width=True
             )
             
-            if st.button("🔄 Start Over", use_container_width=True):
+            # User feedback
+            st.divider()
+            st.caption("Was this helpful?")
+            col_fb1, col_fb2 = st.columns(2)
+            with col_fb1:
+                if st.button("👍", use_container_width=True, key="feedback_good"):
+                    st.toast("Thanks for your feedback!", icon="🎉")
+            with col_fb2:
+                if st.button("👎", use_container_width=True, key="feedback_bad"):
+                    st.toast("We'll work on improving!", icon="🔧")
+            
+            st.divider()
+            
+            if st.button("🔄 Start Over", use_container_width=True, key="reset"):
                 st.session_state.generated_letter = None
                 st.session_state.vision_output = None
                 st.session_state.is_processing = False

@@ -1,5 +1,4 @@
 import asyncio
-import nest_asyncio
 from google.adk.models.google_llm import Gemini
 from google.adk.agents import LlmAgent
 from google.adk.tools import AgentTool, google_search
@@ -44,6 +43,10 @@ class CoordinatorTeam:
         Creates the Specialist Researcher who checks ONLY policy documents.
         CONTEXT AWARE: Uses the provider_name to filter searches.
         """
+        
+        obs = self.obs  # # capture in closure
+        project_id = self.project_id
+        data_store_id = self.data_store_id
         
         def check_insurance_policy(query: str) -> str:
             """Queries the specific insurance policy PDF for coverage limits/exclusions."""
@@ -126,165 +129,141 @@ class CoordinatorTeam:
             """
         )
 
-    async def _run_async(self, bill_data_json: str, patient_name: str = "", 
-                        patient_zip: str = "", insurance_provider: str = "", context: str = ""):
-        """Async version of the orchestration workflow with observability."""
-        
-        # Generate trace ID
+    async def run(self, bill_data_json: str, patient_name: str = "", 
+					patient_zip: str = "", insurance_provider: str = "", context: str = ""):
+        """
+		Async entry point for running the coordinator team.
+        """
         trace_id = f"trace_{uuid.uuid4().hex[:8]}"
         self.obs.start_trace(trace_id)
-        
+		
         try:
-            # CRITICAL FIX: Create a fresh model for this run
+			# Create a fresh model for this run
             self.model = self._get_or_create_model()
             logger.info(f"Created fresh model for trace {trace_id}")
-            
-            # Start coordination span
+			
+			# Start coordination span
             self.obs.start_span(
-                AgentPhase.COORDINATION, 
-                "ClaimCoordinator",
-                metadata={
-                    "bill_length": len(bill_data_json),
-                    "has_patient_name": bool(patient_name),
-                    "provider": insurance_provider
-                }
-            )
-            
-            # UPDATED: Pass provider to researcher
+				AgentPhase.COORDINATION, 
+				"ClaimCoordinator",
+				metadata={
+					"bill_length": len(bill_data_json),
+					"has_patient_name": bool(patient_name),
+					"provider": insurance_provider
+				}
+			)
+			
+			# Create sub-agents
             policy_researcher = self._create_policy_researcher(insurance_provider)
             web_researcher = self._create_web_researcher()
             writer = self._create_writer()
 
-            # The Boss Agent - Updated context
+			# The Boss Agent
             coordinator = LlmAgent(
-                name="ClaimCoordinator",
-                model=self.model,
-                tools=[AgentTool(policy_researcher), AgentTool(web_researcher), AgentTool(writer)],
-                instruction=f"""
-                You are the Appeal Process Manager.
-                
-                Patient Information:
-                - Name: {patient_name or "Not provided"}
-                - Zip Code: {patient_zip or "Not provided"}
-                - Insurance Provider: {insurance_provider or "Unknown/General"}
-                - Additional Context: {context or "None"}
-                
-                YOUR WORKFLOW:
-                1. You have received 'Bill Data' from the Vision Agent.
-                2. Call 'PolicyResearcher' to find coverage details SPECIFIC to {insurance_provider or "the patient's policy"}.
-                3. Call 'WebResearcher' to find external legal protections and precedents.
-                4. Consolidate the findings.
-                5. Call 'WriterAgent' with the 'Bill Data' AND the combined research.
-                6. Output the final letter from the Writer.
-                """
-            )
+				name="ClaimCoordinator",
+				model=self.model,
+				tools=[AgentTool(policy_researcher), AgentTool(web_researcher), AgentTool(writer)],
+				instruction=f"""
+				You are the Appeal Process Manager.
+				
+				Patient Information:
+				- Name: {patient_name or "Not provided"}
+				- Zip Code: {patient_zip or "Not provided"}
+				- Insurance Provider: {insurance_provider or "Unknown/General"}
+				- Additional Context: {context or "None"}
+				
+				YOUR WORKFLOW:
+				1. You have received 'Bill Data' from the Vision Agent.
+				2. Call 'PolicyResearcher' to find coverage details SPECIFIC to {insurance_provider or "the patient's policy"}.
+				3. Call 'WebResearcher' to find external legal protections and precedents.
+				4. Consolidate the findings.
+				5. Call 'WriterAgent' with the 'Bill Data' AND the combined research.
+				6. Output the final letter from the Writer.
+				"""
+			)
 
-            # Execute
+			# Execute
             runner = InMemoryRunner(agent=coordinator, app_name="claim_compass")
-            
-            # Use a unique session ID per run to avoid conflicts
+			
             session_id = f"session_{trace_id}"
-            
+			
             try:
                 await runner.session_service.create_session(
-                    app_name="claim_compass",
-                    user_id="user",
-                    session_id=session_id
-                )
+					app_name="claim_compass",
+					user_id="user",
+					session_id=session_id
+				)
             except Exception as e:
                 logger.warning(f"Session creation warning (may already exist): {e}")
 
             user_msg = types.Content(
-                role="user", 
-                parts=[types.Part(text=f"Here is the Bill Data:\n\n{bill_data_json}\n\nPlease process this bill and create an appeal letter.")]
-            )
-            
+				role="user", 
+				parts=[types.Part(text=f"Here is the Bill Data:\n\n{bill_data_json}\n\nPlease process this bill and create an appeal letter.")]
+			)
+			
             final_response = "Processing..."
-            
-            # Track sub-agent executions
+			
+			# Track sub-agent executions
             policy_research_done = False
             web_research_done = False
-            
+			
             try:
-                for event in runner.run(
-                    user_id="user", 
-                    session_id=session_id, 
-                    new_message=user_msg
-                ):
-                    # Log agent decisions & Detect Tool Calls
+				# ✅ CORRECT: Use async for with run_async()
+                async for event in runner.run_async(
+					user_id="user",
+					session_id=session_id,
+					new_message=user_msg
+				):
+					# Log agent decisions & Detect Tool Calls
                     if event.content and event.content.parts:
                         for part in event.content.parts:
                             if part.function_call:
                                 tool_name = part.function_call.name
-                                
-                                # ROBUST CHECK: Look for the tool name, not the agent name
+								
                                 if tool_name == "PolicyResearcher" and not policy_research_done:
                                     self.obs.start_span(AgentPhase.POLICY_RESEARCH, "PolicyResearcher")
                                     policy_research_done = True
                                 elif tool_name == "WebResearcher" and not web_research_done:
                                     self.obs.start_span(AgentPhase.WEB_RESEARCH, "WebResearcher")
                                     web_research_done = True
-                    
-                    # Capture final response
+					
+					# Capture final response
                     if event.is_final_response() and event.content:
                         for part in event.content.parts:
                             if hasattr(part, 'text') and part.text:
                                 final_response = part.text
                                 break
-                
-                # Close any open spans
+				
+				# Close any open spans
                 if web_research_done:
                     self.obs.end_span(success=True, result_metadata={"phase": "web_research_complete"})
                 if policy_research_done:
                     self.obs.end_span(success=True, result_metadata={"phase": "policy_research_complete"})
-                
-                # End coordination span
+				
+				# End coordination span
                 self.obs.end_span(
-                    success=True, 
-                    result_metadata={
-                        "letter_length": len(final_response),
-                        "used_policy_research": policy_research_done,
-                        "used_web_research": web_research_done
-                    }
-                )
-                
+					success=True, 
+					result_metadata={
+						"letter_length": len(final_response),
+						"used_policy_research": policy_research_done,
+						"used_web_research": web_research_done
+					}
+				)
+				
             except Exception as e:
                 logger.error(f"Error during agent execution: {e}", exc_info=True)
                 self.obs.end_span(success=False, error=str(e))
                 final_response = f"Error during processing: {str(e)}\n\nPlease check your configuration and try again."
-                    
+					
             return final_response
-            
+			
         except Exception as e:
-            logger.error(f"Error in _run_async: {e}", exc_info=True)
+            logger.error(f"Error in coordinator run: {e}", exc_info=True)
             self.obs.end_span(success=False, error=str(e))
             return f"System Error: {str(e)}\n\nPlease check logs for details."
         finally:
-            # Always end trace
+			# Always end trace
             self.obs.end_trace()
-            
-            # Clean up the model reference
-            self.model = None
-
-    def run(self, bill_data_json: str, patient_name: str = "", 
-            patient_zip: str = "", insurance_provider: str = "", context: str = ""):
-        """
-        Run the coordinator with observability tracking.
-        Uses a robust loop handling strategy for Streamlit/Cloud Run compatibility.
-        """
-        # 1. Apply nest_asyncio to allow re-entrant loops (crucial for Streamlit)
-        nest_asyncio.apply()
-
-        try:
-            # 2. Try to get the existing running loop
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # 3. If no loop exists (e.g. fresh thread), create a new one
-            logger.info("Creating new event loop for coordinator run")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-        # 4. Run until complete (this blocks until finished but keeps the loop alive)
-        return loop.run_until_complete(
-            self._run_async(bill_data_json, patient_name, patient_zip, insurance_provider, context)
-        )
+			
+			# Clean up the model reference
+            self.model = None   

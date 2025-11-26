@@ -77,6 +77,70 @@ class AgentEvaluator:
             location=Config.LOCATION
         )
         
+    async def run_evaluation_suite_async(self, vision_agent, coordinator_team) -> List[EvaluationResult]:
+        """Async version of evaluation suite."""
+        results = []
+        
+        print("\n" + "="*70)
+        print("🧪 RUNNING AGENT EVALUATION SUITE (ASYNC)")
+        print("="*70 + "\n")
+        
+        for i, case in enumerate(self.test_cases, 1):
+            print(f"📋 Test Case {i}/{len(self.test_cases)}: {case.name}")
+            print(f"   Description: {case.description}")
+            print(f"   Provider: {case.insurance_provider}")
+            
+            try:
+                test_image = self._get_test_image_path(case.case_id)
+                
+                if not test_image.exists():
+                    raise FileNotFoundError(f"CRITICAL: Test image not found at {test_image}")
+
+                print(f"   👁️  Running vision analysis on {test_image.name}")
+                
+                # ASYNC CALLS
+                vision_output = await vision_agent.analyze_bill(str(test_image))
+                
+                generated_letter = await coordinator_team.run(
+                    vision_output,
+                    insurance_provider=case.insurance_provider 
+                )
+                
+                result = self.evaluate_case(case, generated_letter, vision_output)
+                results.append(result)
+                
+                status = "✅ PASS" if result.success else "❌ FAIL"
+                print(f"   {status} - Overall Score: {result.overall_score:.1%}")
+                
+                if not result.success:
+                    all_errors = result.vision_errors + result.research_errors + result.letter_errors
+                    for error in all_errors[:3]:
+                        print(f"      ⚠️  {error}")
+                
+            except Exception as e:
+                print(f"   ❌ ERROR: {str(e)}")
+                results.append(EvaluationResult(
+                    case_id=case.case_id, 
+                    timestamp=datetime.now().isoformat(),
+                    duration_seconds=0, 
+                    success=False, 
+                    vision_score=0, 
+                    research_score=0, 
+                    letter_score=0, 
+                    overall_score=0, 
+                    vision_errors=[str(e)], 
+                    research_errors=[], 
+                    letter_errors=[], 
+                    generated_letter="", 
+                    agent_metadata={}
+                ))
+            
+            print()
+        
+        self._save_results(results)
+        self._print_summary(results)
+        return results
+    
     def _get_test_image_path(self, case_id: str) -> Path:
         """Map test case to its corresponding image."""
         image_map = {

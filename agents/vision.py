@@ -2,6 +2,8 @@ from google import genai
 from google.genai import types
 import mimetypes
 import logging
+import asyncio
+from pathlib import Path
 
 # Import observability
 from observability import get_observability_manager, AgentPhase
@@ -24,12 +26,12 @@ class VisionAgent:
             location=location
         )
 
-    def analyze_bill(self, image_path):
+    async def analyze_bill(self, image_path):
         """
-        Reads a medical bill image and extracts structured data with observability tracking.
+        Reads a medical bill image/PDF and extracts structured data.
         
         Args:
-            image_path: Path to the bill image file
+            image_path: Path to the bill image or PDF file
             
         Returns:
             Structured text containing extracted bill information
@@ -43,22 +45,63 @@ class VisionAgent:
             metadata={"image_path": image_path}
         )
 
-        # Determine MIME type
-        mime_type, _ = mimetypes.guess_type(image_path)
-        if not mime_type or not mime_type.startswith('image/'):
-            mime_type = 'image/jpeg'
-            logger.warning(f"Could not determine MIME type, defaulting to {mime_type}")
-    
-        # Read image bytes
-        try:
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
-        except Exception as e:
-            logger.error(f"Error reading image file: {e}")
-            self.obs.end_span(success=False, error=f"File read error: {str(e)}")
-            return f"Error reading image file: {str(e)}"
+        # Determine file type
+        file_extension = Path(image_path).suffix.lower()
+        
+        # Handle PDFs differently
+        if file_extension == '.pdf':
+            logger.info("Detected PDF file, using PDF processing")
+            try:
+                # Read PDF bytes
+                pdf_bytes = await asyncio.to_thread(self._read_file, image_path)
+                
+                # Use PDF-specific processing
+                response = await asyncio.to_thread(
+                    self._call_model_pdf,
+                    self._get_prompt(),
+                    pdf_bytes
+                )
+                
+                return self._process_response(response)
+                
+            except Exception as e:
+                logger.error(f"Error analyzing PDF: {e}", exc_info=True)
+                self.obs.end_span(success=False, error=f"PDF processing error: {str(e)}")
+                return f"Error analyzing PDF: {str(e)}\n\nPlease try uploading as an image (JPG/PNG) instead."
+        
+        # Handle images (existing code)
+        else:
+            mime_type, _ = mimetypes.guess_type(image_path)
+            if not mime_type or not mime_type.startswith('image/'):
+                mime_type = 'image/jpeg'
+                logger.warning(f"Could not determine MIME type, defaulting to {mime_type}")
             
-        prompt = """
+            # Read image bytes asynchronously
+            try:
+                image_bytes = await asyncio.to_thread(self._read_file, image_path)
+            except Exception as e:
+                logger.error(f"Error reading image file: {e}")
+                self.obs.end_span(success=False, error=f"File read error: {str(e)}")
+                return f"Error reading image file: {str(e)}"
+            
+            try:
+                response = await asyncio.to_thread(
+                    self._call_model,
+                    self._get_prompt(),
+                    image_bytes,
+                    mime_type
+                )
+                
+                return self._process_response(response)
+                
+            except Exception as e:
+                logger.error(f"Error analyzing bill with vision model: {e}", exc_info=True)
+                self.obs.end_span(success=False, error=str(e))
+                return f"Error analyzing bill: {str(e)}\n\nPlease ensure the image is clear and try again."
+    
+    def _get_prompt(self):
+        """Extract prompt as reusable method."""
+        return """
         You are an expert Medical Biller analyzing a medical bill or insurance document.
         
         Extract ALL of the following information in a clear, structured format:
@@ -79,51 +122,83 @@ class VisionAgent:
         If any information is not visible in the image, state "Not visible" for that field.
         Be thorough and extract every piece of information you can see.
         """
-
-        try:
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(text=prompt),
-                            types.Part(
-                                inline_data=types.Blob(
-                                    mime_type=mime_type,
-                                    data=image_bytes
-                                )
-                            )
-                        ]
-                    )
-                ]
+    
+    def _process_response(self, response):
+        """Process model response and update observability."""
+        if response and response.text:
+            logger.info("Vision analysis successful")
+            
+            # Extract metadata for observability
+            result_length = len(response.text)
+            cpt_count = response.text.count("CPT") + response.text.count("cpt")
+            has_denial = "denial" in response.text.lower()
+            
+            # End span with success
+            self.obs.end_span(
+                success=True,
+                result_metadata={
+                    "output_length": result_length,
+                    "cpt_codes_found": cpt_count,
+                    "denial_detected": has_denial
+                }
             )
             
-            if response and response.text:
-                logger.info("Vision analysis successful")
-                
-                # Extract metadata for observability
-                result_length = len(response.text)
-                cpt_count = response.text.count("CPT") + response.text.count("cpt")
-                has_denial = "denial" in response.text.lower()
-                
-                # End span with success
-                self.obs.end_span(
-                    success=True,
-                    result_metadata={
-                        "output_length": result_length,
-                        "cpt_codes_found": cpt_count,
-                        "denial_detected": has_denial
-                    }
+            return response.text
+        else:
+            logger.error("Empty response from vision model")
+            self.obs.end_span(success=False, error="Empty model response")
+            return "Error: No response from vision model. The file may be unclear or invalid."
+    
+    def _read_file(self, image_path):
+        """
+        Synchronous file reading (called via asyncio.to_thread).
+        ✅ KEEP THIS - Needed for async file I/O
+        """
+        with open(image_path, "rb") as f:
+            return f.read()
+    
+    def _call_model(self, prompt, image_bytes, mime_type):
+        """
+        Synchronous model call for images (called via asyncio.to_thread).
+        ✅ KEEP THIS - Needed for async image processing
+        """
+        return self.client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(text=prompt),
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type=mime_type,
+                                data=image_bytes
+                            )
+                        )
+                    ]
                 )
-                
-                return response.text
-            else:
-                logger.error("Empty response from vision model")
-                self.obs.end_span(success=False, error="Empty model response")
-                return "Error: No response from vision model. The image may be unclear or invalid."
-                
-        except Exception as e:
-            logger.error(f"Error analyzing bill with vision model: {e}", exc_info=True)
-            self.obs.end_span(success=False, error=str(e))
-            return f"Error analyzing bill: {str(e)}\n\nPlease ensure the image is clear and try again."
+            ]
+        )
+    
+    def _call_model_pdf(self, prompt, pdf_bytes):
+        """
+        Synchronous model call for PDFs (called via asyncio.to_thread).
+        ✅ NEW METHOD - Handles PDF documents
+        """
+        return self.client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(text=prompt),
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type="application/pdf",
+                                data=pdf_bytes
+                            )
+                        )
+                    ]
+                )
+            ]
+        )
