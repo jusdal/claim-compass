@@ -79,6 +79,10 @@ The `ClaimCoordinator` agent manages the entire workflow using sequential delega
 
 **Why Sequential?** Each research phase builds upon the previous one. Policy-specific findings (e.g., "Kaiser excludes experimental treatments per Section 7.2(f)") directly inform targeted web searches (e.g., "ACA clinical trial coverage requirements"), resulting in more relevant and persuasive legal citations.
 
+## User Interface
+![Claim Compass UI](assets/ui1.png)
+![Claim_Compass_UI2](assets/ui2.png)
+
 ## 🔑 Key Concepts Implemented
 
 ✅ **Multi-Agent System (Sequential + Hierarchical):** Boss coordinator delegates to 4 specialized sub-agents with intelligent handoffs between research phases  
