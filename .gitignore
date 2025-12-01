@@ -1,5 +1,11 @@
 logs/
-evaluation_results/
+#evaluation_results/
 app.py
 temp_bill.jpg
 temp_bill.png
+temp_bill.pdf
+fake_bill.png
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
