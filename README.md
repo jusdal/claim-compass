@@ -122,19 +122,22 @@ The `ClaimCoordinator` agent manages the entire workflow using sequential delega
 
 ### 📊 Real-World Performance
 
-Based on automated evaluation suite results:
+Our automated evaluation pipeline tests the agents against a golden dataset of complex medical denials.
 
-- **Average Quality Score:** 91.7%
+![Evaluation Results Terminal Output](assets/eval_screenshot.png)
+
+**Key Metrics:**
+- **Average Quality Score:** 91.7% (scored by Gemini-as-a-Judge)
 - **Policy Search Success Rate:** 95% (successfully retrieves relevant coverage rules)
 - **Legal Citation Quality:** 97.5% (accurate ACA and case precedent citations)
-- **Processing Time:** ~2 minutes per appeal
+- **Processing Time:** ~2 minutes per appeal (vs. 3+ hours manual work)
 
-#### Sample Output
-From a real $45,975 experimental cancer treatment denial, our system generated a **3,667-character appeal letter** citing:
-- Affordable Care Act clinical trial coverage mandate
-- Kaiser policy Section 7.2(f) (retrieved via RAG)
-- Three legal precedents (*Boldon v. Humana*, *Potter v. Blue Cross*, *Reed v. Wal-Mart*)
-- NCI trial sponsorship verification (NCT04567890)
+#### Sample Output Case
+From a real **$45,975 experimental cancer treatment denial**, our system generated a **3,667-character appeal letter** citing:
+- ✅ **Federal Law:** Affordable Care Act clinical trial coverage mandate
+- ✅ **Policy Specifics:** Kaiser policy Section 7.2(f) (retrieved via RAG)
+- ✅ **Legal Precedents:** *Boldon v. Humana*, *Potter v. Blue Cross*
+- ✅ **Evidence:** NCI trial sponsorship verification (NCT04567890)
 
 *[See full evaluation results](evaluation_results/evaluation_20251125_214137.json)*
 
