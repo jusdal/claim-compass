@@ -153,7 +153,7 @@ From a real **$45,975 experimental cancer treatment denial**, our system generat
 ### Installation
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/claim-compass.git
+git clone https://github.com/jusdal/claim-compass.git
 cd claim-compass
 
 # 2. Create virtual environment
